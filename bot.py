@@ -1,7 +1,7 @@
 """python-bot: Core mínimo de bot con IA + memoria longitudinal.
 
 Template base para cualquier plataforma (Discord, Telegram, CLI, API, etc).
-Inspirado en SerenityOps (config) + free-intelligence/aurity.io (memoria).
+Inspirado en patrones de config centralizada + memoria longitudinal.
 
 Ejemplo de uso como CLI interactivo. Para integrar con Discord/Telegram/etc,
 importa config, MemoryStore, y LLMClient desde tu propio entry point.

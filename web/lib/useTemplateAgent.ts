@@ -4,10 +4,10 @@
  * useTemplateAgent — the template's implementation of core's AgentHook (TRANSPORT).
  *
  * The api/ side (api/app/wire.py + routes/chat.py) already projects fi-runner's
- * native stream onto a server-side WIRE shape. This hook does the thin remap from
- * that wire shape onto core's `AgentStreamEvent` union, then feeds the pure
- * `applyAgentEvent` reducer to build the live turn. The visible transcript is NOT
- * here — fi-glass `useAgentConversation` owns it (the consumer consumes the
+ * native stream onto a server-side WIRE shape. This hook streams that wire shape,
+ * maps each frame onto core's `AgentStreamEvent` (via `mapAgentEvent`), and feeds
+ * the pure `applyAgentEvent` reducer to build the live turn. The visible transcript
+ * is NOT here — fi-glass `useAgentConversation` owns it (the consumer consumes the
  * primitive; it does not re-implement it).
  *
  * Modelled on apps/og118/web/lib/useOg118Agent.ts. The template is unauthenticated
@@ -23,62 +23,24 @@ import {
   type AgentTurnState,
 } from '@free-intelligence/core';
 import { API_URL, API_KEY } from './api';
+import { mapAgentEvent } from './agentEventMap';
 
-/** Template server WIRE frame → core AgentStreamEvent (or null to drop). */
-function mapEvent(ev: Record<string, unknown>): AgentStreamEvent | null {
-  switch (ev.type) {
-    case 'open':
-      return {
-        type: 'open',
-        sessionId: (ev.session_id as string | undefined) ?? undefined,
-        requestId: (ev.request_id as string | undefined) ?? undefined,
-      };
-    case 'text':
-      return { type: 'text', delta: String(ev.delta ?? '') };
-    case 'tool_call':
-      return {
-        type: 'tool_call',
-        call: {
-          id: (ev.id as string | null) ?? null,
-          name: String(ev.name ?? ''),
-          server: (ev.server as string | null) ?? null,
-          isError: (ev.is_error as boolean | null) ?? null,
-        },
-      };
-    case 'plan':
-      return { type: 'plan', steps: ((ev.steps as string[]) ?? []).map(String) };
-    case 'plan_rejected':
-      return {
-        type: 'plan_rejected',
-        rejection: {
-          reason: String(ev.reason ?? ''),
-          matched: (ev.matched as Array<{ index: number; label: string }>) ?? [],
-          guard: (ev.guard as string | null) ?? null,
-        },
-      };
-    case 'step_started':
-      return { type: 'step_started', index: Number(ev.step_index ?? -1) };
-    case 'step_done':
-      return {
-        type: 'step_done',
-        index: Number(ev.step_index ?? -1),
-        status: ev.status === 'failed' ? 'failed' : 'done',
-        summary: ev.summary ? String(ev.summary) : undefined,
-        error: ev.error ? String(ev.error) : undefined,
-      };
-    case 'result':
-      return { type: 'result', text: String(ev.text ?? '') };
-    case 'error':
-      return { type: 'error', message: String(ev.message ?? 'error') };
-    case 'done':
-      return { type: 'done' };
-    default:
-      return null;
-  }
-}
+const SSE_DATA_PREFIX = 'data:';
 
 function authHeaders(): Record<string, string> {
   return API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {};
+}
+
+function newSessionId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return `s-${Date.now()}`;
+}
+
+/** Pull the JSON payload out of one SSE frame, or null if it carries no data line. */
+function parseSseFrame(frame: string): Record<string, unknown> | null {
+  const line = frame.split('\n').find((l) => l.startsWith(SSE_DATA_PREFIX));
+  if (!line) return null;
+  return JSON.parse(line.slice(SSE_DATA_PREFIX.length).trim());
 }
 
 export function useTemplateAgent(): AgentHook {
@@ -87,10 +49,7 @@ export function useTemplateAgent(): AgentHook {
   // One stable client session id for this surface — the api/ requires a non-empty
   // session_id and replays prior turns under it (ConversationStore).
   const sessionIdRef = useRef<string>('');
-  if (!sessionIdRef.current) {
-    sessionIdRef.current =
-      typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `s-${Date.now()}`;
-  }
+  if (!sessionIdRef.current) sessionIdRef.current = newSessionId();
   const abortRef = useRef<AbortController | null>(null);
 
   const send = useCallback(
@@ -127,9 +86,8 @@ export function useTemplateAgent(): AgentHook {
           const frames = buffer.split('\n\n');
           buffer = frames.pop() ?? '';
           for (const frame of frames) {
-            const line = frame.split('\n').find((l) => l.startsWith('data:'));
-            if (!line) continue;
-            apply(mapEvent(JSON.parse(line.slice(5).trim())));
+            const ev = parseSseFrame(frame);
+            if (ev) apply(mapAgentEvent(ev));
           }
         }
       } catch (err) {

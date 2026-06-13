@@ -1,7 +1,21 @@
+# Python
 .env
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .venv/
 *.db
+
+# Node / Next.js (web/)
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Local data / RAG stores
 storage/
+*.h5
+*.hdf5
+
+# OS / editor
 .DS_Store

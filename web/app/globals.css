@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+/* ── Template design tokens (app-*) ─────────────────────────────────────────
+ * Token-first: six color tokens, one edit point to re-brand the whole app.
+ * Components reference `app-*` utilities (bg-app-bg, text-app-accent, …). */
+@theme {
+  --color-app-bg: #0b1220;       /* page background */
+  --color-app-surface: #131c2e;  /* cards / bubbles / input */
+  --color-app-border: #243049;   /* hairlines */
+  --color-app-brand: #4f8cff;    /* primary action */
+  --color-app-accent: #34d399;   /* live / streaming emphasis */
+  --color-app-muted: #8aa0c6;    /* secondary text */
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    overflow-x: clip;
+  }
+  body {
+    @apply min-h-screen bg-app-bg text-zinc-200 antialiased;
+    overflow-x: clip;
+  }
+}

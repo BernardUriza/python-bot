@@ -1,0 +1,46 @@
+# Local Postgres + pgvector for `FI_RAG_BACKEND=pgvector` development.
+#
+# Only needed if you wire RAG (a corpus_id on /chat/stream). The default
+# template path never touches the DB. The API image runs ONE process
+# (uvicorn); the database is a separate, long-lived service. In Azure this
+# role is filled by Azure Database for PostgreSQL Flexible Server with
+# `azure.extensions=VECTOR`.
+#
+# Usage (from the repo root):
+#   docker compose -f infra/docker-compose.dev.yml up -d        # start pg+vector
+#   docker compose -f infra/docker-compose.dev.yml down         # stop (keeps volume)
+#   docker compose -f infra/docker-compose.dev.yml down -v      # nuke (drops data)
+#
+# Then in api/.env:
+#   FI_RAG_BACKEND=pgvector
+#   FI_RAG_PGVECTOR_DSN=postgresql://app:app@127.0.0.1:5433/app
+#   FI_RAG_EMBED_DIM=256            # MUST match the embedder (hashing default)
+#
+# fi-core's PgVectorChunkStore runs `CREATE EXTENSION IF NOT EXISTS vector;`
+# on connect, so all this image needs is the binary loaded (which the
+# pgvector/pgvector tag provides).
+services:
+  pg:
+    image: pgvector/pgvector:pg16
+    container_name: app-pg-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      # Bound to 127.0.0.1 so a misconfigured network doesn't expose the dev
+      # DB on the LAN. Port 5433 (NOT the default 5432) so a co-resident
+      # Postgres / dev tool that already owns 5432 doesn't silently shadow
+      # our container.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - app_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  app_pgdata:

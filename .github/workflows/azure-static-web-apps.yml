@@ -1,0 +1,83 @@
+# Build + deploy the Next.js front (web/) to Azure Static Web Apps.
+#
+# Triggered on push that touches web/ (or this workflow), plus a manual
+# workflow_dispatch. The API (api/) lives in a separate Container App and isn't
+# deployed here.
+#
+# Why we build manually instead of letting the Azure action's Oryx builder do
+# it: Oryx's Next.js detection lags new releases, and our static-export config
+# (output: "export") is more reliably handled by a vanilla `npm ci && npm run
+# build`. skip_app_build: true tells the action to just upload web/out as-is.
+#
+# Required: secret AZURE_STATIC_WEB_APPS_API_TOKEN (the SWA deployment token),
+# variable NEXT_PUBLIC_API_URL (the public API base — inlined at build time),
+# secret NEXT_PUBLIC_API_KEY (the public API gate — also inlined; not a secret
+# in the cryptographic sense, just kept out of logs).
+name: Deploy web to Azure Static Web Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/azure-static-web-apps.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: swa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    name: Build and deploy
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      # Cache Next.js's incremental build directory. NEXT_PUBLIC_API_URL is in
+      # the key because Turbopack inlines it into chunks — if the URL moves, the
+      # cached chunks would point at the OLD backend. Bump the "v2" prefix to
+      # nuke ALL prior caches if a cache poisoning is ever suspected.
+      - name: Cache Next.js build
+        uses: actions/cache@v5
+        with:
+          path: web/.next/cache
+          key: nextjs-v2-${{ runner.os }}-${{ vars.NEXT_PUBLIC_API_URL }}-${{ hashFiles('web/package-lock.json') }}-${{ hashFiles('web/**/*.[jt]s', 'web/**/*.[jt]sx', 'web/**/*.css') }}
+          restore-keys: |
+            nextjs-v2-${{ runner.os }}-${{ vars.NEXT_PUBLIC_API_URL }}-${{ hashFiles('web/package-lock.json') }}-
+
+      # NEXT_PUBLIC_* is inlined at build time, not read at runtime — so the API
+      # URL and the X-API-Key gate MUST be set before `next build`, otherwise
+      # the production bundle defaults to http://localhost:8080 and forgets the
+      # X-API-Key header (the API would 401). The URL is a repo VARIABLE (public
+      # DNS); the key is a repo SECRET (kept out of logs, even though it ships
+      # in the bundle).
+      - name: Build (next build → web/out)
+        working-directory: web
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_KEY: ${{ secrets.NEXT_PUBLIC_API_KEY }}
+        run: npm run build
+
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: upload
+          # Quirk: when skip_app_build is true, the action ignores
+          # output_location and treats app_location as the artifact root (it
+          # greps app_location for index.html). So point straight at web/out —
+          # the directory `next build` already populated.
+          app_location: web/out
+          skip_app_build: true

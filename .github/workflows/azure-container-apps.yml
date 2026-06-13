@@ -1,0 +1,130 @@
+# Build the API image and roll it into Azure Container Apps. Companion to
+# azure-static-web-apps.yml which handles the front; together they keep the
+# contract "what's on the default branch IS what's live" for both halves.
+#
+# Triggered on push that touches api/ (or this workflow), plus a manual
+# workflow_dispatch. The workflow stays green on touch-free commits because
+# the paths filter shields it.
+#
+# Auth model: OIDC federated identity, NOT a long-lived service principal
+# secret. Create a federated credential on your AAD app whose subject is
+# `repo:<owner>/<repo>:ref:refs/heads/<default-branch>`. Branch protection IS
+# the auth perimeter — to grant CI to another branch, add another federated
+# credential; do NOT broaden the existing one.
+#
+# Registry: GitHub Container Registry (ghcr.io/<owner>/<repo>/api). The
+# package's first push lands as `private`; Container Apps cannot pull a private
+# GHCR package without a registry credential, so after the first run flip it to
+# `public` once (the package UI, or:
+#   gh api -X PATCH /user/packages/container/<repo>%2Fapi/visibility -F visibility=public ).
+#
+# Required repo VARIABLES: AZURE_CLIENT_ID, AZURE_TENANT_ID,
+# AZURE_SUBSCRIPTION_ID, AZURE_CONTAINER_APP_NAME, AZURE_RESOURCE_GROUP.
+name: Deploy API to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - ".github/workflows/azure-container-apps.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: aca-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read       # checkout
+  id-token: write      # required for OIDC azure/login
+  packages: write      # push to ghcr.io
+
+env:
+  REGISTRY: ghcr.io
+  # Image name follows GHCR convention (lowercase, org/repo nested). Derived
+  # from the repo so a clone needs no edit; lowercased in the step below.
+  IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}/api
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    name: Build and deploy
+    steps:
+      - uses: actions/checkout@v5
+
+      # Lowercase the image name — GHCR rejects uppercase characters.
+      - name: Compute image tag
+        id: img
+        run: |
+          IMG_LOWER=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=${IMG_LOWER}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${IMG_LOWER}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build with api/Dockerfile, context = api/. Tagged with the commit SHA
+      # (immutable, what Container Apps rolls to) AND :latest.
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: api
+          file: api/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.img.outputs.image }}
+            ${{ steps.img.outputs.image_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # `az containerapp update --image` creates a new revision and shifts 100%
+      # traffic to it (default single-revision mode). The Container App must
+      # already have its env vars/secrets wired out-of-band (CLAUDE_CODE_OAUTH_
+      # TOKEN, APP_API_KEY, CORS_ALLOW_ORIGINS, any AZURE_OPENAI_* for codex) so
+      # a workflow review never risks leaking them.
+      - name: Update Container App revision
+        run: |
+          az containerapp update \
+            --name "${{ vars.AZURE_CONTAINER_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${{ steps.img.outputs.image }}" \
+            --output none
+          echo "Rolled ${{ vars.AZURE_CONTAINER_APP_NAME }} to ${{ steps.img.outputs.image }}"
+
+      # Soft probe — the new revision is healthy if /health returns 200 within
+      # ~90s. Container Apps' own readiness probe already gates the traffic
+      # shift; a failure here usually means a regression in /health itself
+      # (e.g. a broken import). We fail the workflow so the next push doesn't
+      # silently overlay on a broken revision.
+      - name: Smoke /health
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ vars.AZURE_CONTAINER_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "Probing https://$FQDN/health …"
+          for i in $(seq 1 18); do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "https://$FQDN/health" || echo "000")
+            echo "  attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "OK — revision is live."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL — /health never returned 200."
+          exit 1

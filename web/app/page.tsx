@@ -1,5 +1,5 @@
-import { ChatView } from "../components/chat/ChatView";
+import { AgentChat } from "../components/AgentChat";
 
 export default function Home() {
-  return <ChatView />;
+  return <AgentChat />;
 }

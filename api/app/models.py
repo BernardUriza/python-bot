@@ -1,7 +1,7 @@
 """Pydantic request models for the template HTTP API."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .validation import REQUEST_TEXT_MAX_CHARS
 
@@ -14,5 +14,4 @@ class ChatRequest(BaseModel):
     # turn so the agent can search_documents over it. Leave unset to skip RAG.
     corpus_id: str | None = Field(default=None, max_length=128)
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")

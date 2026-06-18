@@ -9,6 +9,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.marketplace import marketplace_router
+from app.marketplace.payments import (
+    FakePaymentGateway,
+    PaymentResult,
+    set_payment_gateway,
+)
 from app.marketplace.store import order_store, product_store
 
 
@@ -21,10 +26,21 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _reset_payment_gateway():
+    yield
+    set_payment_gateway(FakePaymentGateway())
+
+
+class _DecliningGateway:
+    def charge(self, order) -> PaymentResult:
+        return PaymentResult(ok=False, reference=None, error="declined")
+
+
 def _product(client: TestClient, *, publish: bool = True, **over) -> dict:
     body = {"slug": "fanzine-mariposa", "title": "Fanzine Mariposa",
             "description": "Hecho a mano.", "price_cents": 15000, "currency": "MXN",
-            "stock": 3, "seller": "Razzia", **over}
+            "stock": 3, "seller": "Vendedora demo", **over}
     r = client.post("/marketplace/products", json=body)
     assert r.status_code == 201, r.text
     item = r.json()
@@ -118,3 +134,23 @@ def test_pay_twice_is_conflict(client):
 
 def test_pay_unknown_order_404(client):
     assert client.post("/marketplace/orders/nope/pay").status_code == 404
+
+
+def test_failed_payment_keeps_order_pending_and_stock_intact(client):
+    set_payment_gateway(_DecliningGateway())
+    p = _product(client, stock=3)
+    order = client.post("/marketplace/orders", json={"buyer_name": "C", "buyer_contact": "x",
+        "items": [{"product_id": p["id"], "quantity": 2}]}).json()
+    pay = client.post(f"/marketplace/orders/{order['id']}/pay")
+    assert pay.status_code == 402, pay.text
+    assert client.get("/marketplace/products/fanzine-mariposa").json()["stock"] == 3
+
+
+def test_live_marketplace_refuses_fake_gateway(client, monkeypatch):
+    monkeypatch.setenv("APP_MARKETPLACE_LIVE", "1")
+    p = _product(client, stock=3)
+    order = client.post("/marketplace/orders", json={"buyer_name": "C", "buyer_contact": "x",
+        "items": [{"product_id": p["id"], "quantity": 1}]}).json()
+    pay = client.post(f"/marketplace/orders/{order['id']}/pay")
+    assert pay.status_code == 503, pay.text
+    assert client.get("/marketplace/products/fanzine-mariposa").json()["stock"] == 3

@@ -21,7 +21,7 @@ from .models import (
     ProductDraft,
     ProductPatch,
 )
-from .payments import payment_gateway
+from .payments import PaymentGatewayNotConfigured, active_payment_gateway
 from .store import SlugTaken, order_store, product_store
 
 marketplace_router = APIRouter(prefix="/marketplace", tags=["marketplace"])
@@ -130,7 +130,11 @@ async def pay_order(order_id: str) -> Order:
         if product is None or product.stock < line.quantity:
             raise HTTPException(status_code=409, detail=f"insufficient stock: {line.product_id}")
 
-    result = payment_gateway().charge(order)
+    try:
+        gateway = active_payment_gateway()
+    except PaymentGatewayNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    result = gateway.charge(order)
     if not result.ok:
         raise HTTPException(status_code=402, detail=result.error or "payment failed")
 

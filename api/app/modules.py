@@ -1,16 +1,14 @@
-"""Opt-in module selector — the seam that keeps the template lean.
+"""Optional-module selector — the thin view of the feature system that app.py
+uses to decide which optional routers to mount.
 
-The chat router is ALWAYS on. Optional capabilities (``cms``, ``marketplace``,
-…) are mounted only when named in the ``APP_MODULES`` env var (comma-separated,
-case-insensitive). A consumer that wants a content-managed site with a store
-sets ``APP_MODULES=cms,marketplace``; a plain assistant leaves it unset and pays
-nothing for what it doesn't use.
+The real logic (registry, dependency resolution, validation) lives in
+``app.features``. This returns just the NON-core features so the mount loop in
+``app.app`` doesn't try to "mount" the always-on chat.
 """
 from __future__ import annotations
 
-import os
+from .features import CORE_FEATURES, enabled_features
 
 
 def enabled_optional_modules() -> set[str]:
-    raw = (os.getenv("APP_MODULES") or "").strip()
-    return {m.strip().lower() for m in raw.split(",") if m.strip()}
+    return enabled_features() - set(CORE_FEATURES)

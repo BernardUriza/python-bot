@@ -14,6 +14,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from .auth import limiter
+from .modules import enabled_optional_modules
 from .observability import request_observability_middleware
 from .routes import chat_router
 
@@ -65,6 +66,16 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(chat_router)
+
+# Optional, opt-in capabilities. The chat router above is always on; these mount
+# only when named in APP_MODULES (see app.modules). Lazy-imported inside the
+# guard so a plain assistant never pays the import cost of a module it disabled.
+_optional = enabled_optional_modules()
+if "cms" in _optional:
+    from .cms import cms_router
+
+    app.include_router(cms_router)
+    _log.info("optional module mounted: cms")
 
 
 @app.get("/health")

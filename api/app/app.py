@@ -76,6 +76,11 @@ if "cms" in _optional:
 
     app.include_router(cms_router)
     _log.info("optional module mounted: cms")
+if "marketplace" in _optional:
+    from .marketplace import marketplace_router
+
+    app.include_router(marketplace_router)
+    _log.info("optional module mounted: marketplace")
 
 
 @app.get("/health")

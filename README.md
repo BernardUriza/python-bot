@@ -43,6 +43,24 @@ npm install
 NEXT_PUBLIC_API_URL=http://localhost:8080 npm run dev   # → http://localhost:3000
 ```
 
+The chat surface persists its session id in `localStorage`, so a page reload
+keeps talking to the same `ConversationStore` thread (the longitudinal memory);
+the built-in **New Chat** button rotates to a fresh session.
+
+## Test & CI
+
+`.github/workflows/ci.yml` gates every PR and push to `main` — main must stay
+green because "what's on `main` IS what's live."
+
+```bash
+cd web && npm test        # vitest — wire mapper + session persistence
+cd api && pytest          # boundary glue: validation, auth gate, wire, SSE, /health
+```
+
+The API tests stub the agent runtime (`fi_runner`/`fi-core` are conda + git
+only) in `api/conftest.py`, so the api CI job is a plain `pip install` — no
+monorepo clone. They cover the template infrastructure, not fi internals.
+
 ## Deploy (Azure)
 
 Both workflows trigger on push to `main` touching their half. They expect:

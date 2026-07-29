@@ -75,9 +75,15 @@ app.include_router(feature_router)  # GET /features — advertises this app's co
 _optional = enabled_optional_modules()
 if "cms" in _optional:
     from .cms import cms_router
+    from .cms.seed import seed_from_env
+    from .cms.store import content_store
 
     app.include_router(cms_router)
     _log.info("optional module mounted: cms")
+    # An org's canonical content lives in its repo; CMS_SEED_FILE re-applies it on
+    # every boot so the default in-memory store doesn't serve an empty feed after
+    # a restart. Idempotent by slug and never fatal — see app.cms.seed.
+    seed_from_env(content_store())
 if "marketplace" in _optional:
     from .marketplace import marketplace_router
 

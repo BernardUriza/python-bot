@@ -12,10 +12,12 @@ dependencies:
       # is on PyPI, so install both from git. fi-core MUST come before fi-runner
       # (pip resolves fi-runner's fi-core dep from this explicit URL).
       #
-      # PIN FOR DEPLOY: `@dev` is a MOVING branch — fine for local dev, but for a
-      # reproducible image pin a tag or SHA (or switch to @main once your needed
-      # changes land there). A moving branch means two builds of the same commit
-      # can differ.
+      # PIN FOR DEPLOY: `@main` is a MOVING branch — fine for local dev, but for a
+      # reproducible image pin a tag or SHA. A moving branch means two builds of
+      # the same commit can differ — and a branch that DISAPPEARS breaks every
+      # build at once: this pin said `@dev` until 2026-07-29, when the branch was
+      # gone from free-intelligence and mamba died with `pathspec 'dev' did not
+      # match any file(s) known to git`. A tag or SHA cannot vanish under you.
       #
       # RAG store backends — both extras ship so a switch between
       # FI_RAG_BACKEND=hdf5 (local dev / single-process) and =pgvector (deploy /
@@ -23,9 +25,9 @@ dependencies:
       #   - [stores-hdf5]:     h5py + numpy — single-file persistent backend.
       #   - [stores-pgvector]: asyncpg + pgvector — Postgres backend with
       #                        concurrent writers. The deploy path.
-      - "fi-core[stores-hdf5,stores-pgvector] @ git+https://github.com/BernardUriza/free-intelligence.git@dev#subdirectory=apps/packages/fi-core"
+      - "fi-core[stores-hdf5,stores-pgvector] @ git+https://github.com/BernardUriza/free-intelligence.git@main#subdirectory=apps/packages/fi-core"
       # [claude,codex]: both backends install clean — parity as the doctrine wants.
-      - "fi-runner[claude,codex] @ git+https://github.com/BernardUriza/free-intelligence.git@dev#subdirectory=apps/packages/fi-runner"
+      - "fi-runner[claude,codex] @ git+https://github.com/BernardUriza/free-intelligence.git@main#subdirectory=apps/packages/fi-runner"
       - fastapi
       - "uvicorn[standard]"
       # Per-IP rate limiting on /chat/stream. A public Container App URL is a

@@ -49,6 +49,14 @@ jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
     name: Build and deploy
+    # The IMAGE always builds — that build is the canary for the dependency pins
+    # in environment.yml, and it is the only thing that catches an upstream branch
+    # vanishing under you. The AZURE steps below skip when this repo isn't wired
+    # to an identity + Container App, so a fresh clone doesn't fail on every push
+    # (azure/login: "Not all values are present") and train everyone to ignore a
+    # red CI — which is how a real regression later goes unnoticed.
+    env:
+      DEPLOY_CONFIGURED: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_CONTAINER_APP_NAME != '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -85,6 +93,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Azure login (OIDC)
+        if: ${{ env.DEPLOY_CONFIGURED == 'true' }}
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -97,6 +106,7 @@ jobs:
       # TOKEN, APP_API_KEY, CORS_ALLOW_ORIGINS, any AZURE_OPENAI_* for codex) so
       # a workflow review never risks leaking them.
       - name: Update Container App revision
+        if: ${{ env.DEPLOY_CONFIGURED == 'true' }}
         run: |
           az containerapp update \
             --name "${{ vars.AZURE_CONTAINER_APP_NAME }}" \
@@ -111,6 +121,7 @@ jobs:
       # (e.g. a broken import). We fail the workflow so the next push doesn't
       # silently overlay on a broken revision.
       - name: Smoke /health
+        if: ${{ env.DEPLOY_CONFIGURED == 'true' }}
         run: |
           FQDN=$(az containerapp show \
             --name "${{ vars.AZURE_CONTAINER_APP_NAME }}" \

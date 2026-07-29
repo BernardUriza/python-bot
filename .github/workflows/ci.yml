@@ -1,0 +1,61 @@
+# CI — runs on every PR and on push to main. The deploy workflows
+# (azure-*.yml) ship what lands on main; THIS gate is what decides whether a
+# change is allowed to land in the first place. "What's on main IS what's live,"
+# so main must stay green.
+#
+# Two independent jobs, one per half of the stack:
+#   web — typecheck (tsc --noEmit) + vitest
+#   api — pytest over the template's boundary glue. The agent runtime (fi_runner
+#         / fi-core) is conda + git only, so tests/conftest.py stubs it — this
+#         job is a plain `pip install fastapi …`, no monorepo clone, ~seconds.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: web — typecheck + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+
+  api:
+    name: api — pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        # Only what the boundary tests touch — fi_runner is stubbed in conftest.
+        run: pip install fastapi "uvicorn[standard]" "slowapi>=0.1.9" httpx pytest pytest-asyncio
+      - name: Test
+        run: python -m pytest -q

@@ -22,19 +22,11 @@ import {
   type AgentStreamEvent,
   type AgentTurnState,
 } from '@free-intelligence/core';
-import { API_URL, API_KEY } from './api';
+import { API_URL, CHAT_STREAM_TIMEOUT_MS, apiHeaders } from './api';
 import { mapAgentEvent } from './agentEventMap';
+import { loadOrCreateSessionId, rotateSessionId } from './session';
 
 const SSE_DATA_PREFIX = 'data:';
-
-function authHeaders(): Record<string, string> {
-  return API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {};
-}
-
-function newSessionId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-  return `s-${Date.now()}`;
-}
 
 /** Pull the JSON payload out of one SSE frame, or null if it carries no data line. */
 function parseSseFrame(frame: string): Record<string, unknown> | null {
@@ -46,10 +38,12 @@ function parseSseFrame(frame: string): Record<string, unknown> | null {
 export function useTemplateAgent(): AgentHook {
   const [turn, setTurn] = useState<AgentTurnState>(initialAgentTurnState());
   const [isStreaming, setIsStreaming] = useState(false);
-  // One stable client session id for this surface — the api/ requires a non-empty
-  // session_id and replays prior turns under it (ConversationStore).
+  // One stable, PERSISTED session id for this surface — the api/ requires a
+  // non-empty session_id and replays prior turns under it (ConversationStore),
+  // so persisting it across reloads is what makes that longitudinal memory
+  // actually reach the user.
   const sessionIdRef = useRef<string>('');
-  if (!sessionIdRef.current) sessionIdRef.current = newSessionId();
+  if (!sessionIdRef.current) sessionIdRef.current = loadOrCreateSessionId();
   const abortRef = useRef<AbortController | null>(null);
 
   const send = useCallback(
@@ -68,13 +62,24 @@ export function useTemplateAgent(): AgentHook {
 
       const controller = new AbortController();
       abortRef.current = controller;
+      // Client-side watchdog: a wedged stream (proxy ate the heartbeat, server
+      // hung) must not hang the UI forever. Kept LONGER than the server turn
+      // timeout so the server wins the race and returns its own error first;
+      // this only fires if the server never responds at all. Tagged
+      // TimeoutError (not AbortError) so it surfaces to the user instead of
+      // being swallowed like a manual cancel.
+      const watchdog = setTimeout(
+        () => controller.abort(new DOMException('stream timed out', 'TimeoutError')),
+        CHAT_STREAM_TIMEOUT_MS,
+      );
       try {
         const res = await fetch(`${API_URL}/chat/stream`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ message: text, session_id: sessionIdRef.current }),
           signal: controller.signal,
         });
+        if (!res.ok) throw new Error(`chat request failed (${res.status})`);
         if (!res.body) throw new Error('no response body');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -91,10 +96,12 @@ export function useTemplateAgent(): AgentHook {
           }
         }
       } catch (err) {
+        // A manual abort (user hit stop) is silent; a timeout / real failure surfaces.
         if (!(err instanceof DOMException && err.name === 'AbortError')) {
           apply({ type: 'error', message: err instanceof Error ? err.message : String(err) });
         }
       } finally {
+        clearTimeout(watchdog);
         abortRef.current = null;
         setIsStreaming(false);
       }
@@ -106,7 +113,12 @@ export function useTemplateAgent(): AgentHook {
     abortRef.current?.abort();
   }, []);
 
+  // reset() backs fi-glass's built-in "New Chat" button. Beyond clearing the
+  // visible turn, we ROTATE the persisted session id so a new conversation
+  // truly starts fresh — otherwise the backend ConversationStore would keep
+  // replaying the old thread under the same id.
   const reset = useCallback(() => {
+    sessionIdRef.current = rotateSessionId();
     setTurn(initialAgentTurnState());
   }, []);
 

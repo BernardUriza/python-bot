@@ -154,3 +154,38 @@ def test_seed_from_env_reads_the_configured_path(tmp_path, monkeypatch, name, st
     report = seed_from_env(store(), model, "UNA_VAR_DE_SEED")
 
     assert report is not None and report.created == ["una", "dos"]
+
+
+def test_a_store_that_explodes_never_kills_the_boot(tmp_path):
+    """seed_from_env corre en tiempo de import: cualquier raise aquí es un
+    contenedor que no arranca — el API entero de la org caído por una fila mala."""
+    class _StoreQueTruena:
+        def create(self, draft):
+            raise RuntimeError("el store se rompió")
+
+        def publish(self, item_id):  # pragma: no cover - nunca se llega
+            raise AssertionError("no debería llamarse")
+
+    path = _write(tmp_path, {"items": [_cms_draft("una"), _cms_draft("dos")]})
+
+    report = seed_store(_StoreQueTruena(), path, ContentDraft)
+
+    assert report.created == []
+    assert report.invalid == ["una", "dos"]
+
+
+def test_a_publish_that_finds_nothing_is_not_reported_as_published(tmp_path):
+    class _StoreSinPublish:
+        def create(self, draft):
+            return type("Item", (), {"id": "x", "slug": draft.slug})()
+
+        def publish(self, item_id):
+            return None
+
+    path = _write(tmp_path, {"items": [{**_cms_draft("una"), "publish": True}]})
+
+    report = seed_store(_StoreSinPublish(), path, ContentDraft)
+
+    assert report.created == ["una"]
+    assert report.published == []
+    assert report.invalid == ["una"]

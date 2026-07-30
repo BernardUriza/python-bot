@@ -33,8 +33,10 @@ Three guarantees, in order of how much damage their absence would do:
 - **Idempotent by slug.** A slug already in the store is the org's LIVE state;
   the seeder skips it entirely and never publishes it. A restart therefore cannot
   resurrect something a human took down.
-- **Never fatal.** A missing file, malformed JSON, or a single bad item degrades
-  to a warning and a report — a dead container is worse than a thin surface.
+- **Never fatal.** A missing file, malformed JSON, a rejected draft or a store
+  that refuses a row all degrade to a warning and a report. This runs at import
+  time: anything that raises here is a container that will not boot, i.e. the
+  org's whole API down over one bad row. A thin surface beats a dead one.
 - **Publishing is opt-in per item.** ``publish`` defaults to false, so the
   approval gate stays where the org put it.
 """
@@ -87,9 +89,10 @@ def _label(entry: dict) -> str:
 
 
 def _is_slug_taken(exc: Exception) -> bool:
-    # Each module raises its own SlugTaken; matching by name keeps this seeder
-    # from importing either module (and from caring which one called it).
-    return type(exc).__name__ == "SlugTaken"
+    # Each module raises its OWN SlugTaken, so matching by name keeps this seeder
+    # from importing either one. Walking the MRO means a subclass still counts;
+    # a rename shows up as "unexpected" and is reported, never fatal.
+    return any(base.__name__ == "SlugTaken" for base in type(exc).__mro__)
 
 
 def seed_store(store: SeedableStore, path: str | Path, draft_model) -> SeedReport:
@@ -126,15 +129,25 @@ def seed_store(store: SeedableStore, path: str | Path, draft_model) -> SeedRepor
         try:
             item = store.create(draft)
         except Exception as e:
-            if not _is_slug_taken(e):
-                raise
-            report.skipped.append(draft.slug)
+            if _is_slug_taken(e):
+                report.skipped.append(draft.slug)
+            else:
+                # NEVER fatal. This runs at import time, so a raise here is a
+                # container that will not boot — the org's whole API down over
+                # one bad row. Report it and keep seeding the rest.
+                report.invalid.append(draft.slug)
+                _log.warning("seed item %s could not be created: %r", draft.slug, e)
             continue
 
         report.created.append(draft.slug)
         if entry.get("publish"):
-            store.publish(item.id)
-            report.published.append(draft.slug)
+            if store.publish(item.id) is None:
+                # The store took it and then could not find it: the report must
+                # not claim a publish that did not happen.
+                report.invalid.append(draft.slug)
+                _log.warning("seed item %s created but publish found nothing", draft.slug)
+            else:
+                report.published.append(draft.slug)
 
     _log.info(
         "seed from %s — created=%d published=%d already-there=%d ignored=%d invalid=%d",

@@ -158,7 +158,10 @@ def test_live_marketplace_refuses_fake_gateway(client, monkeypatch):
         "items": [{"product_id": p["id"], "quantity": 1}]}).json()
     pay = client.post(f"/marketplace/orders/{order['id']}/pay")
     assert pay.status_code == 503, pay.text
-    assert client.get("/marketplace/products/fanzine-mariposa").json()["stock"] == 3
+    # La unidad sigue APARTADA: la orden quedó pendiente, no muerta. Lo que no
+    # puede pasar es que se marque pagada.
+    assert client.get("/marketplace/products/fanzine-mariposa").json()["stock"] == 2
+    assert client.get(f"/marketplace/orders/{order['id']}") is not None
 
 
 def test_default_gateway_refuses_so_off_never_means_fake_paid(client):
@@ -167,7 +170,8 @@ def test_default_gateway_refuses_so_off_never_means_fake_paid(client):
     Antes el default era FakePaymentGateway y «marketplace apagado» significaba
     *pagos simulados como exitosos*: la orden salía `paid` con referencia
     `fake_…` sin que se moviera un peso. En un API desplegado eso es un cobro
-    fantasma. Ahora apagado = cerrado, y el stock no se toca.
+    fantasma. Ahora apagado = cerrado: la unidad queda apartada por la orden
+    pendiente, pero nadie queda marcado como que pagó.
     """
     set_payment_gateway(ClosedPaymentGateway())
     p = _product(client, stock=3)
@@ -178,4 +182,57 @@ def test_default_gateway_refuses_so_off_never_means_fake_paid(client):
 
     assert pay.status_code == 503, pay.text
     assert "does not accept payments yet" in pay.json()["detail"]
-    assert client.get(f"/marketplace/products/{p['slug']}").json()["stock"] == 3
+    assert client.get(f"/marketplace/products/{p['slug']}").json()["stock"] == 2
+
+
+# ---- reservas de stock ----
+
+def test_ordering_reserves_stock_so_a_unique_piece_cannot_be_sold_twice(client):
+    """Lo que venden estas orgs suele ser pieza única. Si el stock solo bajara al
+    pagar, N compradoras podrían recibir «tu pedido quedó» por el mismo suéter."""
+    p = _product(client, stock=1)
+    primera = client.post("/marketplace/orders", json={"buyer_name": "A", "buyer_contact": "a",
+        "items": [{"product_id": p["id"], "quantity": 1}]})
+    assert primera.status_code == 201
+
+    segunda = client.post("/marketplace/orders", json={"buyer_name": "B", "buyer_contact": "b",
+        "items": [{"product_id": p["id"], "quantity": 1}]})
+
+    assert segunda.status_code == 409
+    assert client.get(f"/marketplace/products/{p['slug']}").json()["stock"] == 0
+
+
+def test_an_abandoned_reservation_expires_and_gives_the_piece_back(client, monkeypatch):
+    """Una reserva sin caducidad es cómo una tienda real acaba toda «agotada»."""
+    import app.marketplace.routes as rutas
+
+    p = _product(client, stock=1)
+    client.post("/marketplace/orders", json={"buyer_name": "A", "buyer_contact": "a",
+        "items": [{"product_id": p["id"], "quantity": 1}]})
+    assert client.get(f"/marketplace/products/{p['slug']}").json()["stock"] == 0
+
+    monkeypatch.setattr(rutas, "ORDER_RESERVATION_TTL_S", -1)  # todo lo pendiente ya venció
+
+    client.get("/marketplace/products")  # el listado dispara el barrido perezoso
+    assert client.get(f"/marketplace/products/{p['slug']}").json()["stock"] == 1
+    assert client.post("/marketplace/orders", json={"buyer_name": "B", "buyer_contact": "b",
+        "items": [{"product_id": p["id"], "quantity": 1}]}).status_code == 201
+
+
+def test_order_store_is_bounded_and_evicting_returns_the_reserved_units(client):
+    """POST /orders es público y sin llave: un dict sin tope es una llave de agua
+    de memoria que cualquiera abre, en el proceso que también sirve el contenido
+    público de la org."""
+    from app.marketplace.store import order_store
+
+    tienda = order_store()
+    tienda._max_orders = 3
+    p = _product(client, stock=10)
+    for _ in range(5):
+        assert client.post("/marketplace/orders", json={"buyer_name": "C", "buyer_contact": "x",
+            "items": [{"product_id": p["id"], "quantity": 1}]}).status_code == 201
+
+    assert len(tienda.list()) == 3
+    # 5 apartadas, 2 desalojadas y devueltas: 10 - 5 + 2 = 7
+    assert client.get(f"/marketplace/products/{p['slug']}").json()["stock"] == 7
+    tienda._max_orders = 500

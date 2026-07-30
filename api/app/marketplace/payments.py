@@ -5,10 +5,20 @@ adapter (same two-method shape); no route or store code changes. This is the
 opt-in 'level' the marketplace adds, kept fake-by-default so the tracer bullet
 charges nothing.
 
-Fail-closed level: set ``APP_MARKETPLACE_LIVE`` once a consumer accepts real
-buyers. With it set, ``active_payment_gateway()`` refuses the fake gateway so
-``/pay`` can never mark an order paid without money actually moving. Unset
-(dev / test / default) keeps the fake gateway — existing behavior unchanged.
+Fail-closed in BOTH directions — the default is a gateway that refuses:
+
+- **Nothing wired** (the default, and every deploy that hasn't opted in):
+  ``/pay`` answers 503. Orders can still be placed; what is closed is the money.
+- **``APP_MARKETPLACE_LIVE`` set but only the fake gateway wired**: 503 too, so a
+  half-finished go-live can't mark real buyers paid.
+- **A real adapter wired**: charges.
+
+The fake gateway is opt-in for dev and tests (``set_payment_gateway``), never the
+process default. It used to be, and that made "marketplace off" mean *payments
+simulated as successful*: a buyer could place an order and get ``status: paid``
+with a ``fake_…`` reference while no money moved. On a deployed API that is a
+phantom-charge machine — the exact thing this seam exists to prevent, and the
+thing an org selling on behalf of precarious people can least afford.
 """
 from __future__ import annotations
 
@@ -39,7 +49,15 @@ class FakePaymentGateway:
         return PaymentResult(ok=True, reference=f"fake_{uuid.uuid4().hex[:16]}")
 
 
-_GATEWAY: PaymentGateway = FakePaymentGateway()
+class ClosedPaymentGateway:
+    """The default: no payment path is wired, so nothing can be charged. Never
+    reached — ``active_payment_gateway()`` refuses it before ``charge`` runs."""
+
+    def charge(self, order: Order) -> PaymentResult:  # pragma: no cover - guarded above
+        return PaymentResult(ok=False, reference=None, error="no payment gateway configured")
+
+
+_GATEWAY: PaymentGateway = ClosedPaymentGateway()
 
 
 def payment_gateway() -> PaymentGateway:
@@ -53,8 +71,8 @@ def set_payment_gateway(gateway: PaymentGateway) -> None:
 
 
 class PaymentGatewayNotConfigured(Exception):
-    """Marketplace is live but only the fake gateway is wired — fail-closed so a
-    real buyer is never marked paid without money actually moving."""
+    """No usable payment path — fail-closed so a buyer is never marked paid
+    without money actually moving."""
 
 
 def _marketplace_is_live() -> bool:
@@ -62,13 +80,16 @@ def _marketplace_is_live() -> bool:
 
 
 def active_payment_gateway() -> PaymentGateway:
-    """The process gateway with a fail-closed guard: when ``APP_MARKETPLACE_LIVE``
-    is set, refuse ``FakePaymentGateway`` so ``/pay`` cannot mark an order paid
-    without a real charge. Flag unset keeps current dev / test behavior."""
+    """The process gateway, or a refusal. Two ways to be closed, one to be open."""
     gateway = _GATEWAY
+    if isinstance(gateway, ClosedPaymentGateway):
+        raise PaymentGatewayNotConfigured(
+            "no payment gateway is configured; this marketplace does not accept "
+            "payments yet. Orders can be placed, but nothing can be charged"
+        )
     if _marketplace_is_live() and isinstance(gateway, FakePaymentGateway):
         raise PaymentGatewayNotConfigured(
-            "APP_MARKETPLACE_LIVE is set but no real payment gateway is configured; "
-            "wire one via set_payment_gateway() before accepting payments"
+            "APP_MARKETPLACE_LIVE is set but only the fake gateway is wired; "
+            "swap in a real adapter via set_payment_gateway() before accepting payments"
         )
     return gateway

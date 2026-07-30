@@ -6,8 +6,7 @@ fi_runner, so it mounts (and tests) without the agent stack. Enable it by adding
 included alongside the always-on chat router.
 
 ``cms_router`` resolves lazily (PEP 562) so importing the pure-pydantic halves —
-``app.cms.models``, ``app.cms.store``, ``app.cms.seed`` — costs nothing but
-pydantic. Eagerly importing the router here dragged ``app.auth`` (and with it
+``app.cms.models``, ``app.cms.store`` — costs nothing but pydantic. Eagerly importing the router here dragged ``app.auth`` (and with it
 slowapi and the whole web stack) into every consumer of the models: a seed
 validator or a content script then died with ModuleNotFoundError outside the API
 environment, for code that never needed a web framework.

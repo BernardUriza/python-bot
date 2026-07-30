@@ -73,22 +73,27 @@ app.include_router(feature_router)  # GET /features — advertises this app's co
 # only when named in APP_MODULES (see app.modules). Lazy-imported inside the
 # guard so a plain assistant never pays the import cost of a module it disabled.
 _optional = enabled_optional_modules()
+# An org's canonical catalogue lives in its repo; these env vars re-apply it on
+# every boot so the default in-memory stores don't serve an empty surface after a
+# restart. Idempotent by slug and never fatal — see app.seeding.
 if "cms" in _optional:
     from .cms import cms_router
-    from .cms.seed import seed_from_env
+    from .cms.models import ContentDraft
     from .cms.store import content_store
+    from .seeding import CMS_SEED_FILE_ENV, seed_from_env
 
     app.include_router(cms_router)
     _log.info("optional module mounted: cms")
-    # An org's canonical content lives in its repo; CMS_SEED_FILE re-applies it on
-    # every boot so the default in-memory store doesn't serve an empty feed after
-    # a restart. Idempotent by slug and never fatal — see app.cms.seed.
-    seed_from_env(content_store())
+    seed_from_env(content_store(), ContentDraft, CMS_SEED_FILE_ENV)
 if "marketplace" in _optional:
     from .marketplace import marketplace_router
+    from .marketplace.models import ProductDraft
+    from .marketplace.store import product_store
+    from .seeding import MARKETPLACE_SEED_FILE_ENV, seed_from_env
 
     app.include_router(marketplace_router)
     _log.info("optional module mounted: marketplace")
+    seed_from_env(product_store(), ProductDraft, MARKETPLACE_SEED_FILE_ENV)
 
 
 @app.get("/health")

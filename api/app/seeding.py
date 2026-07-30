@@ -1,18 +1,24 @@
-"""Boot-time seeding for the CMS module.
+"""Boot-time seeding for the opt-in content stores (CMS, marketplace).
 
-An org's canonical content usually lives in its repo (reviewed, versioned,
-approved out-of-band) long before anyone touches the admin UI. Without this, that
-content only enters the store over HTTP — so every cold start of a container with
-``InMemoryContentStore`` serves an empty feed until a human re-runs a loader
-script. Point ``CMS_SEED_FILE`` at a JSON file and the store re-applies it on
-every boot.
+An org's canonical catalogue — its crónicas, its products — usually lives in its
+repo (reviewed, versioned, approved out-of-band) long before anyone touches an
+admin UI. Without this, that content only enters over HTTP, so every cold start
+of a container with the default in-memory stores serves an empty surface until a
+human re-runs a loader script. Point an env var at a JSON file and the store
+re-applies it on every boot.
 
-File shape — ``{"items": [...]}``, where each item is either a flat
-``ContentDraft`` or an object carrying the draft under ``payload`` (so an org can
-keep its own editorial metadata beside it in the same file, single source of
-truth). Two optional flags live at the item root: ``publish: true`` publishes what this
-seeder creates, and ``skip: true`` keeps an item in the file without ever loading
-it (an org's record of content it decided NOT to serve)::
+ONE seeder serves every module: ``InMemoryContentStore`` and
+``InMemoryProductStore`` expose the same ``create(draft)`` / ``publish(id)``
+contract, so the algorithm is identical and only the draft model, the store and
+the env var change. A second copy per module would be duplication wearing a
+different name.
+
+File shape — ``{"items": [...]}``, where each item is either a flat draft or an
+object carrying the draft under ``payload`` (so an org can keep its own editorial
+metadata beside it in the same file, single source of truth). Two optional flags
+live at the item root: ``publish: true`` publishes what this seeder creates, and
+``skip: true`` keeps an item in the file without ever loading it (an org's record
+of content it decided NOT to serve)::
 
     {"items": [
       {"slug": "una", "title": "Una", "body": "…", "author": "Colectiva"},
@@ -28,7 +34,7 @@ Three guarantees, in order of how much damage their absence would do:
   the seeder skips it entirely and never publishes it. A restart therefore cannot
   resurrect something a human took down.
 - **Never fatal.** A missing file, malformed JSON, or a single bad item degrades
-  to a warning and a report — a dead container is worse than a thin feed.
+  to a warning and a report — a dead container is worse than a thin surface.
 - **Publishing is opt-in per item.** ``publish`` defaults to false, so the
   approval gate stays where the org put it.
 """
@@ -39,13 +45,19 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
-from .models import ContentDraft
-from .store import SlugTaken
+_log = logging.getLogger("app.seeding")
 
-_log = logging.getLogger("app.cms.seed")
+CMS_SEED_FILE_ENV = "CMS_SEED_FILE"
+MARKETPLACE_SEED_FILE_ENV = "MARKETPLACE_SEED_FILE"
 
-SEED_FILE_ENV = "CMS_SEED_FILE"
+_ITEM_FLAGS = ("publish", "skip")
+
+
+class SeedableStore(Protocol):
+    def create(self, draft): ...
+    def publish(self, item_id: str): ...
 
 
 @dataclass
@@ -59,14 +71,8 @@ class SeedReport:
 
 
 def _entries(raw: object) -> list[dict]:
-    if isinstance(raw, dict):
-        items = raw.get("items")
-    else:
-        items = raw
+    items = raw.get("items") if isinstance(raw, dict) else raw
     return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
-
-
-_ITEM_FLAGS = ("publish", "skip")
 
 
 def _payload_of(entry: dict) -> dict:
@@ -76,16 +82,21 @@ def _payload_of(entry: dict) -> dict:
     return {k: v for k, v in entry.items() if k not in _ITEM_FLAGS}
 
 
-def _draft_of(entry: dict) -> tuple[ContentDraft, bool]:
-    return ContentDraft(**_payload_of(entry)), bool(entry.get("publish"))
-
-
 def _label(entry: dict) -> str:
     return str(_payload_of(entry).get("slug") or "<sin slug>")
 
 
-def seed_content_store(store, path: str | Path) -> SeedReport:
-    """Apply ``path`` to ``store``. Never raises — inspect the report."""
+def _is_slug_taken(exc: Exception) -> bool:
+    # Each module raises its own SlugTaken; matching by name keeps this seeder
+    # from importing either module (and from caring which one called it).
+    return type(exc).__name__ == "SlugTaken"
+
+
+def seed_store(store: SeedableStore, path: str | Path, draft_model) -> SeedReport:
+    """Apply ``path`` to ``store``, building each item with ``draft_model``.
+
+    Never raises on bad input — inspect the report.
+    """
     report = SeedReport()
     path = Path(path)
 
@@ -93,19 +104,20 @@ def seed_content_store(store, path: str | Path) -> SeedReport:
         raw = json.loads(path.read_text(encoding="utf8"))
     except FileNotFoundError:
         report.error = f"seed file not found: {path}"
-        _log.warning("%s — CMS starts empty", report.error)
+        _log.warning("%s — store starts empty", report.error)
         return report
     except (OSError, json.JSONDecodeError) as e:
         report.error = f"seed file unreadable ({path}): {e}"
-        _log.warning("%s — CMS starts empty", report.error)
+        _log.warning("%s — store starts empty", report.error)
         return report
 
     for entry in _entries(raw):
         if entry.get("skip"):
             report.ignored.append(_label(entry))
             continue
+
         try:
-            draft, publish = _draft_of(entry)
+            draft = draft_model(**_payload_of(entry))
         except Exception as e:
             report.invalid.append(_label(entry))
             _log.warning("seed item %s rejected: %s", _label(entry), e)
@@ -113,26 +125,28 @@ def seed_content_store(store, path: str | Path) -> SeedReport:
 
         try:
             item = store.create(draft)
-        except SlugTaken:
+        except Exception as e:
+            if not _is_slug_taken(e):
+                raise
             report.skipped.append(draft.slug)
             continue
 
         report.created.append(draft.slug)
-        if publish:
+        if entry.get("publish"):
             store.publish(item.id)
             report.published.append(draft.slug)
 
     _log.info(
-        "CMS seed from %s — created=%d published=%d already-there=%d ignored=%d invalid=%d",
+        "seed from %s — created=%d published=%d already-there=%d ignored=%d invalid=%d",
         path, len(report.created), len(report.published),
         len(report.skipped), len(report.ignored), len(report.invalid),
     )
     return report
 
 
-def seed_from_env(store) -> SeedReport | None:
-    """Seed from ``CMS_SEED_FILE`` if it is set; otherwise a no-op."""
-    configured = (os.getenv(SEED_FILE_ENV) or "").strip()
+def seed_from_env(store: SeedableStore, draft_model, env_var: str) -> SeedReport | None:
+    """Seed from the file named by ``env_var`` if it is set; otherwise a no-op."""
+    configured = (os.getenv(env_var) or "").strip()
     if not configured:
         return None
-    return seed_content_store(store, configured)
+    return seed_store(store, configured, draft_model)

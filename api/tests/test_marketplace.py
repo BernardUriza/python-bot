@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.marketplace import marketplace_router
 from app.marketplace.payments import (
+    ClosedPaymentGateway,
     FakePaymentGateway,
     PaymentResult,
     set_payment_gateway,
@@ -28,8 +29,12 @@ def client() -> TestClient:
 
 @pytest.fixture(autouse=True)
 def _reset_payment_gateway():
-    yield
+    # The process default is ClosedPaymentGateway (nothing charges unless someone
+    # wires a real adapter). Tests that exercise a successful charge opt INTO the
+    # fake one explicitly — that opt-in is the point, see test_default_gateway_*.
     set_payment_gateway(FakePaymentGateway())
+    yield
+    set_payment_gateway(ClosedPaymentGateway())
 
 
 class _DecliningGateway:
@@ -154,3 +159,23 @@ def test_live_marketplace_refuses_fake_gateway(client, monkeypatch):
     pay = client.post(f"/marketplace/orders/{order['id']}/pay")
     assert pay.status_code == 503, pay.text
     assert client.get("/marketplace/products/fanzine-mariposa").json()["stock"] == 3
+
+
+def test_default_gateway_refuses_so_off_never_means_fake_paid(client):
+    """El estado por defecto (nadie cableó pasarela) NO puede marcar pagado.
+
+    Antes el default era FakePaymentGateway y «marketplace apagado» significaba
+    *pagos simulados como exitosos*: la orden salía `paid` con referencia
+    `fake_…` sin que se moviera un peso. En un API desplegado eso es un cobro
+    fantasma. Ahora apagado = cerrado, y el stock no se toca.
+    """
+    set_payment_gateway(ClosedPaymentGateway())
+    p = _product(client, stock=3)
+    order = client.post("/marketplace/orders", json={"buyer_name": "C", "buyer_contact": "x",
+        "items": [{"product_id": p["id"], "quantity": 1}]}).json()
+
+    pay = client.post(f"/marketplace/orders/{order['id']}/pay")
+
+    assert pay.status_code == 503, pay.text
+    assert "does not accept payments yet" in pay.json()["detail"]
+    assert client.get(f"/marketplace/products/{p['slug']}").json()["stock"] == 3

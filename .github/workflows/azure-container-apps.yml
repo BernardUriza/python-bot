@@ -102,8 +102,8 @@ jobs:
 
       # `az containerapp update --image` creates a new revision and shifts 100%
       # traffic to it (default single-revision mode). The Container App must
-      # already have its env vars/secrets wired out-of-band (CLAUDE_CODE_OAUTH_
-      # TOKEN, APP_API_KEY, CORS_ALLOW_ORIGINS, any AZURE_OPENAI_* for codex) so
+      # already have its env vars/secrets wired out-of-band (AIRE_GATE_URL,
+      # AIRE_AUTH_TOKEN, APP_API_KEY, CORS_ALLOW_ORIGINS) so
       # a workflow review never risks leaking them.
       - name: Update Container App revision
         if: ${{ env.DEPLOY_CONFIGURED == 'true' }}

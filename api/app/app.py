@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from .auth import limiter
+from .backend import close_backends
 from .features import feature_router
 from .modules import enabled_optional_modules
 from .observability import request_observability_middleware
@@ -37,7 +39,17 @@ _STARTED_AT = time.time()
 
 _log.info("logging cabled — chat router registered")
 
-app = FastAPI(title=APP_NAME, version=APP_VERSION)
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Nothing to warm on boot — the AIRE door is reached lazily on the first
+    turn. On the way out, drain the pooled HTTP clients the backends hold, so a
+    shutdown does not strand their connections and TLS sessions."""
+    yield
+    await close_backends()
+
+
+app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=_lifespan)
 app.middleware("http")(request_observability_middleware)
 
 # CORS — accept origins listed in CORS_ALLOW_ORIGINS (comma-separated) or

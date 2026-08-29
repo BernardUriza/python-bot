@@ -7,8 +7,6 @@ import re
 
 from fastapi import HTTPException
 
-from .backend import normalize_backend_name
-
 _log = logging.getLogger("app.validation")
 
 # ---------------------------------------------------------------------------
@@ -84,15 +82,6 @@ def validate_id(value: str, *, field: str) -> str:
             ),
         )
     return value
-
-
-def validate_backend(backend: str | None) -> str | None:
-    if backend is None:
-        return None
-    try:
-        return normalize_backend_name(backend)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def public_error_message(exc: Exception) -> str:

@@ -5,7 +5,10 @@ channels:
   - nodefaults
 dependencies:
   - python=3.12
-  - nodejs>=22,<23          # for the npm CLIs: claude-code, codex (+ any MCP)
+  # NO nodejs: it was here only for the `claude` / `codex` npm CLIs that
+  # fi_runner used to shell out to. AIRE runs the agent server-side, so nothing
+  # local needs Node. Add it back only if you ship an npm MCP server AND have a
+  # route that can actually run one (the AIRE door cannot — see app/runner.py).
   - pip
   - pip:
       # fi-runner + fi-core live in the free-intelligence monorepo (MIT). Neither
@@ -19,15 +22,25 @@ dependencies:
       # gone from free-intelligence and mamba died with `pathspec 'dev' did not
       # match any file(s) known to git`. A tag or SHA cannot vanish under you.
       #
-      # RAG store backends — both extras ship so a switch between
-      # FI_RAG_BACKEND=hdf5 (local dev / single-process) and =pgvector (deploy /
-      # multi-replica) is just an env var, no rebuild.
-      #   - [stores-hdf5]:     h5py + numpy — single-file persistent backend.
-      #   - [stores-pgvector]: asyncpg + pgvector — Postgres backend with
-      #                        concurrent writers. The deploy path.
-      - "fi-core[stores-hdf5,stores-pgvector] @ git+https://github.com/BernardUriza/free-intelligence.git@main#subdirectory=apps/packages/fi-core"
-      # [claude,codex]: both backends install clean — parity as the doctrine wants.
-      - "fi-runner[claude,codex] @ git+https://github.com/BernardUriza/free-intelligence.git@main#subdirectory=apps/packages/fi-runner"
+      # fi-core with NO store extras. They used to ship (`stores-hdf5` +
+      # `stores-pgvector`) because the LOCAL rag_store MCP server ran in this
+      # process and read a local corpus chosen by FI_RAG_BACKEND. On the AIRE
+      # route that server never runs: `rag_store` is a tool AIRE mounts
+      # server-side, over the corpus in AIRE's Postgres. So h5py/numpy/asyncpg/
+      # pgvector are dead weight here, and FI_RAG_* no longer configures
+      # anything this app reads.
+      # Restore `fi-core[stores-hdf5,stores-pgvector]` only together with a route
+      # that runs the local capability again — and remember the corpus has two
+      # ends: a search wired to a store nothing writes answers confidently and
+      # wrongly about the user's own files.
+      - "fi-core @ git+https://github.com/BernardUriza/free-intelligence.git@main#subdirectory=apps/packages/fi-core"
+      # [aire]: the ONLY backend fi-runner still ships. `claude` and `codex` were
+      # deleted upstream on 2026-08-29 along with ClaudeCodeBackend /
+      # CodexBackend / SubprocessCLIBackend; asking for them here would fail the
+      # build. The extra pulls httpx and nothing else — the turn crosses the
+      # network to AIRE's door, so there is no Anthropic SDK and no CLI to
+      # install (see the Dockerfile, which lost both npm packages).
+      - "fi-runner[aire] @ git+https://github.com/BernardUriza/free-intelligence.git@main#subdirectory=apps/packages/fi-runner"
       - fastapi
       - "uvicorn[standard]"
       # Per-IP rate limiting on /chat/stream. A public Container App URL is a

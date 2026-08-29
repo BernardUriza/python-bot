@@ -22,7 +22,6 @@ from ..validation import (
     clean_optional_id,
     clean_text,
     public_error_message,
-    validate_backend,
 )
 from ..wire import (
     plan_rejected_to_wire,
@@ -102,9 +101,8 @@ async def chat_stream_endpoint(request: Request, req: ChatRequest) -> StreamingR
     """Multi-turn chat with live chain-of-thought as Server-Sent Events.
 
     Re-emits each event from ``runner.chat_stream`` as SSE so the UI can paint
-    every tool call as a step while the text streams token by token. Live
-    streaming requires the claude backend; codex falls back to a single
-    ``result`` event (per fi-runner).
+    every tool call as a step while the text streams token by token. Every turn
+    crosses AIRE's door, which streams natively — there is no backend to pick.
 
     Wire contract (event → payload):
       open          {"session_id","request_id"}
@@ -122,7 +120,6 @@ async def chat_stream_endpoint(request: Request, req: ChatRequest) -> StreamingR
     session_id = req.session_id  # already validated by Pydantic Field constraints
     request_id = current_request_id()
     message = clean_text(req.message, field="message", max_chars=REQUEST_TEXT_MAX_CHARS)
-    backend = validate_backend(req.backend)
     corpus_id = clean_optional_id(req.corpus_id, field="corpus_id")
 
     # Per-turn telemetry capture. Lives in closure so each request gets its own
@@ -150,7 +147,6 @@ async def chat_stream_endpoint(request: Request, req: ChatRequest) -> StreamingR
                 stream = chat_stream(
                     message,
                     session_id=session_id,
-                    backend=backend,
                     corpus_id=corpus_id,
                     on_event=_on_event,
                 )

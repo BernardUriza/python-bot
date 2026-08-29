@@ -58,8 +58,7 @@ def _install_fi_runner_stub() -> None:
     fi_runner.RetryPolicy = _Stub
     fi_runner.Runner = _Stub
     fi_runner.ToolPolicy = _Stub
-    fi_runner.ClaudeCodeBackend = _Stub
-    fi_runner.CodexBackend = _Stub
+    fi_runner.AIREBackend = _Stub
     fi_runner.antidrift_guard = _antidrift_guard
     fi_runner.packs = packs
     fi_runner.conversation = conversation

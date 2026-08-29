@@ -2,15 +2,16 @@
 
 THIS IS THE SEAM. A fresh project fills three things here and ships:
   1. the persona (``personas/<name>.md`` — content, not code),
-  2. the MCP servers the agent may call (``_MCP_SERVERS`` below — empty by
-     default),
-  3. the capabilities + guards your product needs.
+  2. the guards your product needs (``guards.py``),
+  3. the AIRE registry tools the agent may call — in ``backend.BASE_TOOLS``, NOT
+     here: on the AIRE route tools are mounted server-side, so a local MCP spec
+     in ``_MCP_SERVERS`` below never runs (read the note on it).
 
 Everything else (backend factory + cache, conversation store, wire schemas,
 SSE plumbing) is template infrastructure you should not need to touch.
 
 Extracted siblings:
-  backend.py   — backend factory + process-wide singleton cache (claude/codex)
+  backend.py   — AIRE door client factory + process-wide cache
   store.py     — process-wide ConversationStore singleton (longitudinal memory)
   guards.py    — generic anti-drift guard chain
 """
@@ -23,14 +24,13 @@ from pathlib import Path
 
 from fi_runner import (
     MCPServerSpec,  # noqa: F401 — re-exported for the MCP seam below
-    PermissionMode,
     RetryPolicy,
     Runner,
     ToolPolicy,
 )
 from fi_runner.conversation import ConversationStore
 
-from .backend import _get_backend, normalize_backend_name
+from .backend import get_backend
 from .guards import build_guards
 from .store import _CHAT_STORE, chat_store
 
@@ -50,15 +50,19 @@ def load_persona(name: str) -> str:
 ASSISTANT_PERSONA = load_persona("assistant")
 
 # --- MCP seam -----------------------------------------------------------------
-# Declare the MCP servers the agent may call. The template ships with NONE so
-# it boots and answers with the model + native tools only. Add yours here:
+# Declare the MCP servers the agent may call. The template ships with NONE.
 #
 #   _MCP_SERVERS = [
 #       MCPServerSpec(name="fetch", command="npx", args=["-y", "some-mcp"]),
 #   ]
 #
-# Whatever credential the server reads should come from an env var passthrough
-# (set on the Container App, never baked into the image).
+# READ THIS BEFORE FILLING IT IN. On the AIRE route a local MCP server does NOT
+# reach the agent: only the spec's NAME crosses the door, and AIRE mounts its
+# OWN vetted server of that name — a name outside its registry is rejected with
+# a 422. So a `command`/`args` you write here never runs anywhere. Tools that
+# actually reach the model are named in `backend.BASE_TOOLS` and must exist in
+# AIRE's registry first. Keep this list empty unless you are deliberately
+# addressing a registry tool by spec.
 _MCP_SERVERS: list[MCPServerSpec] = []
 
 __all__ = [
@@ -66,40 +70,34 @@ __all__ = [
     "chat_store",
     "chat_stream",
     "load_persona",
-    "normalize_backend_name",
 ]
 
 
 def build_runner(
-    backend: str | None = None,
     *,
     with_rag: bool = False,
     conversation_store: ConversationStore | None = None,
     on_event: Callable[[str, dict], None] | None = None,
 ) -> Runner:
-    """Compose a fi_runner Runner with the chosen backend + the MCP seam.
+    """Compose a fi_runner Runner over the AIRE door.
 
-    The Runner itself is cheap (a config holder); the BACKEND is the expensive
-    bit and it's cached process-wide — see :func:`backend._get_backend`.
+    The Runner itself is cheap (a config holder); the BACKEND holds the pooled
+    HTTP client and is cached process-wide — see :func:`backend.get_backend`.
     """
-    backend_name = normalize_backend_name(backend)
-    agent_backend = _get_backend(backend_name)
-
-    capability_names: list[str] = ["task_tracker"]
-    if with_rag:
-        capability_names.append("rag_store")
-
     return Runner(
-        backend=agent_backend,
+        backend=get_backend(with_rag=with_rag),
         persona=ASSISTANT_PERSONA,
         extra_mcp_servers=_MCP_SERVERS,
-        capabilities=capability_names,
-        # BYPASS = auto-approve tool calls. Requires a non-root user in the
-        # container (Claude Code refuses BYPASS as root — the Dockerfile sets
-        # up the `runner` user). Native WebSearch/WebFetch stay enabled so the
-        # template agent can reach the web out of the box; lock them down here
-        # if you route all web access through an MCP instead.
-        tool_policy=ToolPolicy(permission_mode=PermissionMode.BYPASS),
+        # No local capabilities: AIRE mounts its tools server-side, so the
+        # names go on the backend (`registry_tools`) and this list stays empty.
+        # Spawning fi-core MCP subprocesses here would cost the subprocess and
+        # reach nobody.
+        capabilities=[],
+        # AIRE does NOT forward tool_policy — it configures tools server-side,
+        # and the builtin surface is chosen by the door mode (`APP_AIRE_MODE`,
+        # default "agent" = the native web tools this template shipped with).
+        # A non-default policy here would only earn a warning per turn.
+        tool_policy=ToolPolicy(),
         guards=build_guards(),
         retry_policy=RetryPolicy(max_attempts=2),
         conversation_store=conversation_store,
@@ -111,7 +109,6 @@ async def chat_stream(
     message: str,
     *,
     session_id: str,
-    backend: str | None = None,
     corpus_id: str | None = None,
     on_event: Callable[[str, dict], None] | None = None,
 ):
@@ -122,11 +119,12 @@ async def chat_stream(
       - ``{"type":"text","text":delta}`` as the assistant text arrives,
       - ``{"type":"result","result":TurnResult}`` once guards settle.
 
-    The ConversationStore replays prior turns for ``session_id`` automatically —
-    that's the longitudinal memory; the caller just passes the raw message.
+    Memory: AIRE owns the transcript for a session it already holds, so the
+    Runner RESUMES it instead of re-sending the history as prompt text. The
+    ConversationStore below stays as the fallback that replays prior turns for a
+    session AIRE has never seen (a fresh casita, an unreachable door).
     """
     runner = build_runner(
-        backend,
         with_rag=bool(corpus_id),
         conversation_store=_CHAT_STORE,
         on_event=on_event,

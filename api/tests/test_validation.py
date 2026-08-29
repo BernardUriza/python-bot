@@ -10,7 +10,6 @@ from app.validation import (
     clean_optional_id,
     clean_text,
     public_error_message,
-    validate_backend,
     validate_id,
 )
 
@@ -46,20 +45,6 @@ def test_validate_id_rejects_invalid(bad):
 def test_clean_optional_id_passthrough_none_and_blank():
     assert clean_optional_id(None, field="corpus_id") is None
     assert clean_optional_id("   ", field="corpus_id") is None
-
-
-def test_validate_backend_none_passes_through():
-    assert validate_backend(None) is None
-
-
-def test_validate_backend_normalizes_case():
-    assert validate_backend("CLAUDE") == "claude"
-
-
-def test_validate_backend_rejects_unknown():
-    with pytest.raises(HTTPException) as exc:
-        validate_backend("gpt5")
-    assert exc.value.status_code == 400
 
 
 def test_public_error_message_hides_internals():

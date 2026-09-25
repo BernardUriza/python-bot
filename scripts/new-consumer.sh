@@ -48,6 +48,9 @@ rsync -a \
   --exclude='.git/' --exclude='.next/' --exclude='out/' \
   --exclude='__pycache__/' --exclude='*.pyc' --exclude='.env' \
   --exclude='.env*.local' --exclude='storage/' --exclude='*.tsbuildinfo' \
+  --exclude='/.claude/constitution*' --exclude='/.claude/store/' \
+  --exclude='/.claude/commands/' --exclude='/.claude/skills/' --exclude='/.claude/agents/' \
+  --exclude='/.claude/rules/_constitution/' --exclude='/.claude/settings.local.json' \
   "$TEMPLATE/" "$DEST/"
 
 cd "$DEST"

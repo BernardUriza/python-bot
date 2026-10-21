@@ -6,8 +6,8 @@ override = []
 [core]
 id = "agent-constitution"
 repo = "https://github.com/BernardUriza/agent-constitution.git"
-rev = "91f7e8ae5df61ad57731127bbe9547761dc502bc"
-tree = "sha256:99b3047a072cc0f1c55b56ebf599ac2a6b4b94b1df26316036628e995599b720"
+rev = "502c3b6ffb7aca654c10e4973adea949e69402c7"
+tree = "sha256:46c00b965edf27422c10be1ae914a88641a24edcfd711629a048f796bc271d89"
 
 [repo]
 id = "python-bot"
@@ -29,12 +29,12 @@ policy = ["repo", "bernard", "core"]
 methodology = []
 
 [lock]
-canonical_sha256 = "af86abfaaf6d7b60ac989ebcb5114633d63cbe86164d658325e9d133631747de"
+canonical_sha256 = "a69b04426c8bc3a0cce99981c4a0856c3e4e17a14b8cbefab8244888369288b8"
 
 [[overlay]]
 id = "bernard"
 layer = "personal"
 scope = "machine-only"
 repo = "https://github.com/BernardUriza/constitution-bernard.git"
-rev = "1e268e2dcdccc5079d9910e32f7fddca6dbb7f2a"
-tree = "sha256:7a08f289f9ca1639fbc7da9844a63585e6a00de252b8d51c4c63fce29c8babf4"
+rev = "20caaf33f1995169757c10fcc22e10b086ebbeee"
+tree = "sha256:864de67b3dffdd37008781bbd85f53bf2e17c0e33ec0a299cdfb78392b8ef43f"
